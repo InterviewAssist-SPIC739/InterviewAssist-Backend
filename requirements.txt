@@ -5,3 +5,5 @@ pymysql
 python-dotenv
 flask-jwt-extended
 Flask-Mail
+requests
+cryptography
