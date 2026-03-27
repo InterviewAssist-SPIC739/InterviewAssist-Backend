@@ -36,6 +36,7 @@ class User(db.Model):
     two_factor_enabled = db.Column(db.Boolean, default=False)
     is_suspended = db.Column(db.Boolean, default=False)
     status = db.Column(db.String(20), default='active') # active, suspended
+    pending_details = db.Column(db.JSON) # Store proposed alumni profile updates here
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     # Relationships
@@ -81,6 +82,7 @@ class User(db.Model):
             'two_factor_enabled': self.two_factor_enabled,
             'is_suspended': self.is_suspended,
             'status': self.status,
+            'pending_details': self.pending_details,
             'created_at': self.created_at.isoformat(),
             'profile_pic': profile_data.get('profile_pic') if profile_data else None,
             'profile': profile_data, # Full profile data

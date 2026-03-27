@@ -25,6 +25,18 @@ def create_app(config_class=Config):
     jwt = JWTManager(app)
     mail = Mail(app)
 
+    with app.app_context():
+        try:
+            # Check if pending_details column exists, if not add it
+            db.session.execute(text("SELECT pending_details FROM users LIMIT 1"))
+        except Exception:
+            try:
+                db.session.execute(text("ALTER TABLE users ADD COLUMN pending_details JSON"))
+                db.session.commit()
+            except Exception as e:
+                app.logger.error(f"Failed to add pending_details column: {str(e)}")
+                db.session.rollback()
+
     def send_email(subject, recipient, body):
         msg = Message(subject=subject, recipients=[recipient], body=body)
         thread = threading.Thread(target=send_async_email, args=(app, msg, mail))
@@ -261,22 +273,23 @@ def create_app(config_class=Config):
             return jsonify({"error": "User not found"}), 404
             
         try:
-            # Update/Create profile with professional info
-            profile = models.UserProfile.query.filter_by(user_id=user_id).first()
-            if not profile:
-                profile = models.UserProfile(user_id=user_id)
-                db.session.add(profile)
-            
-            if 'phone_number' in data: profile.phone_number = data['phone_number']
-            if 'major' in data: profile.major = data['major']
-            if 'expected_grad_year' in data: profile.expected_grad_year = data['expected_grad_year']
-            if 'current_year' in data: profile.current_year = data['current_year']
-            if 'bio' in data: profile.bio = data['bio']
-            if 'profile_pic' in data: profile.profile_pic = data['profile_pic']
-            if 'linkedin_url' in data: profile.linkedin_url = data['linkedin_url']
-            if 'current_company' in data: profile.current_company = data['current_company']
-            if 'designation' in data: profile.designation = data['designation']
-
+            # Store proposed updates in pending_details JSON field instead of applying them
+            pending_data = {
+                'first_name': data.get('first_name'),
+                'last_name': data.get('last_name'),
+                'email': data.get('email'),
+                'phone_number': data.get('phone_number'),
+                'major': data.get('major'),
+                'expected_grad_year': data.get('expected_grad_year'),
+                'current_year': 'Alumni',
+                'bio': data.get('bio'),
+                'profile_pic': data.get('profile_pic'),
+                'linkedin_url': data.get('linkedin_url'),
+                'current_company': data.get('current_company'),
+                'designation': data.get('designation'),
+                'specialization': data.get('specialization')
+            }
+            user.pending_details = pending_data
             user.status = 'pending'
             db.session.commit()
             
@@ -525,6 +538,7 @@ def create_app(config_class=Config):
             # This prevents overwriting existing data (like Student major) when Alumni completes profile
             if 'phone_number' in data and data['phone_number'] is not None:
                 profile.phone_number = data['phone_number']
+                user.phone_number = data['phone_number']
             if 'major' in data and data['major'] is not None:
                 profile.major = data['major']
             if 'expected_grad_year' in data and data['expected_grad_year'] is not None:
@@ -543,6 +557,14 @@ def create_app(config_class=Config):
                 profile.designation = data['designation']
             if 'specialization' in data and data['specialization'] is not None:
                 profile.specialization = data['specialization']
+                
+            # Update core user fields if provided
+            if 'first_name' in data and data['first_name'] is not None:
+                user.first_name = data['first_name']
+            if 'last_name' in data and data['last_name'] is not None:
+                user.last_name = data['last_name']
+            if 'email' in data and data['email'] is not None:
+                user.email = data['email'].strip().lower()
             
             user.has_completed_profile = True
             db.session.commit()
@@ -1366,8 +1388,33 @@ def create_app(config_class=Config):
 
         try:
             user.status = 'active'
-            # If they were a student requesting upgrade, change their role to Alumni
-            if user.role == 'Student':
+            # If they were a student requesting upgrade, change their role to Alumni and apply pending changes
+            if user.role == 'Student' and user.pending_details:
+                pd = user.pending_details
+                if pd.get('first_name'): user.first_name = pd['first_name']
+                if pd.get('last_name'): user.last_name = pd['last_name']
+                if pd.get('email'): user.email = pd['email']
+                if pd.get('phone_number'): user.phone_number = pd['phone_number']
+                
+                profile = models.UserProfile.query.filter_by(user_id=user.id).first()
+                if not profile:
+                    profile = models.UserProfile(user_id=user.id)
+                    db.session.add(profile)
+                
+                if pd.get('phone_number'): profile.phone_number = pd['phone_number']
+                if pd.get('major'): profile.major = pd['major']
+                if pd.get('expected_grad_year'): profile.expected_grad_year = pd['expected_grad_year']
+                profile.current_year = "Alumni"
+                if pd.get('bio'): profile.bio = pd['bio']
+                if pd.get('profile_pic'): profile.profile_pic = pd['profile_pic']
+                if pd.get('linkedin_url'): profile.linkedin_url = pd['linkedin_url']
+                if pd.get('current_company'): profile.current_company = pd['current_company']
+                if pd.get('designation'): profile.designation = pd['designation']
+                if pd.get('specialization'): profile.specialization = pd['specialization']
+                
+                user.pending_details = None # Clear after applying
+                user.role = 'Alumni'
+            elif user.role == 'Student':
                 user.role = 'Alumni'
                 
             db.session.commit()
@@ -1404,6 +1451,7 @@ def create_app(config_class=Config):
 
             if user.role == 'Student':
                 user.status = 'active'
+                user.pending_details = None # Clear pending details on rejection
             else:
                 user.status = 'rejected'
                 
